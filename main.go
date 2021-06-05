@@ -22,10 +22,10 @@ func main() {
 }
 
 func bench() {
-	sizes := []int{500, 1 << 10, 5 << 10, 100 << 10, 1 << 20}
-	counts := []int{1, 5, 10, 50, 100, 1000}
+	sizes := []int{500, 1 << 10, 10 << 10, 100 << 10}
+	counts := []int{1, 10, 100, 500}
 	withTxns := []bool{false, true}
-	parallels := []int{1, 3, 10}
+	parallels := []int{1, 10, 100}
 
 	for _, size := range sizes {
 		for _, count := range counts {
