@@ -9,4 +9,5 @@ require (
 	github.com/mattn/go-runewidth v0.0.13 // indirect
 	github.com/textileio/go-ds-badger3 v0.0.0-20210324034212-7b7fb3be3d1c
 	github.com/textileio/go-ds-mongo v0.1.4
+	golang.org/x/sys v0.0.0-20210320140829-1e4c9ba3b0c4 // indirect
 )

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -17,7 +18,10 @@ import (
 	mongods "github.com/textileio/go-ds-mongo"
 )
 
+var mongoURI = flag.String("mongo-uri", "mongodb://127.0.0.1:27017", "Mongo URI")
+
 func main() {
+	flag.Parse()
 	bench()
 }
 
@@ -31,16 +35,20 @@ func bench() {
 		for _, count := range counts {
 			fmt.Printf("With item size %s with %d items\n", humanize.IBytes(uint64(size)), count)
 			table := tablewriter.NewWriter(os.Stdout)
-			table.SetHeader([]string{"parallel", "txn", "duration_ms", "errors"})
+			table.SetHeader([]string{"parallel", "txn", "badger_duration_ms", "badger_errors", "mongo_duration_ms", "mongo_errors"})
 
 			for _, withTxn := range withTxns {
 				for _, parallel := range parallels {
-					durationMs, numErrors := benchCase(size, count, parallel, withTxn)
+					badgerDurationMs, badgerNumErrors := benchCase(NewBadgerTxnDatastore, size, count, parallel, withTxn)
+					mongoDurationMs, mongoNumErrors := benchCase(NewMongoTxnDatastore, size, count, parallel, withTxn)
 					r := []string{
 						strconv.Itoa(parallel),
 						strconv.FormatBool(withTxn),
-						strconv.FormatInt(durationMs, 10),
-						strconv.FormatInt(numErrors, 10),
+						strconv.FormatInt(badgerDurationMs, 10),
+						strconv.FormatInt(badgerNumErrors, 10),
+
+						strconv.FormatInt(mongoDurationMs, 10),
+						strconv.FormatInt(mongoNumErrors, 10),
 					}
 					table.Append(r)
 				}
@@ -51,12 +59,12 @@ func bench() {
 
 }
 
-func benchCase(size, count, parallel int, withTxn bool) (int64, int64) {
-	tmpDir, err := ioutil.TempDir("", "")
+type dsFactory func() (datastore.TxnDatastore, func(), error)
+
+func benchCase(createDS dsFactory, size, count, parallel int, withTxn bool) (int64, int64) {
+	ds, clean, err := createDS()
 	checkErr(err)
-	defer os.RemoveAll(tmpDir)
-	ds, err := NewBadgerTxnDatastore(tmpDir)
-	checkErr(err)
+	defer clean()
 	defer ds.Close()
 
 	data := make([]byte, size)
@@ -83,6 +91,7 @@ func benchCase(size, count, parallel int, withTxn bool) (int64, int64) {
 			for i := 0; i < count; i++ {
 				key := datastore.NewKey(fmt.Sprintf("%d", i))
 				if err := w.Put(key, data); err != nil {
+					fmt.Printf("put error: %s\n", err)
 					atomic.AddInt64(&numErrors, 1)
 				}
 			}
@@ -101,30 +110,35 @@ func benchCase(size, count, parallel int, withTxn bool) (int64, int64) {
 }
 
 // NewBadgerTxnDatastore returns a new txndswrap.TxnDatastore backed by Badger.
-func NewBadgerTxnDatastore(repoPath string) (datastore.TxnDatastore, error) {
-	if err := os.MkdirAll(repoPath, os.ModePerm); err != nil {
-		return nil, err
+func NewBadgerTxnDatastore() (datastore.TxnDatastore, func(), error) {
+	tmpDir, err := ioutil.TempDir("", "")
+	checkErr(err)
+
+	if err := os.MkdirAll(tmpDir, os.ModePerm); err != nil {
+		return nil, nil, err
 	}
-	return badger.NewDatastore(repoPath, &badger.DefaultOptions)
+
+	ds, err := badger.NewDatastore(tmpDir, &badger.DefaultOptions)
+	checkErr(err)
+
+	return ds, func() { defer os.RemoveAll(tmpDir) }, nil
+
 }
 
 // NewMongoTxnDatastore returns a new txndswrap.TxnDatastore backed by MongoDB.
-func NewMongoTxnDatastore(uri, dbName string) (datastore.TxnDatastore, error) {
+func NewMongoTxnDatastore() (datastore.TxnDatastore, func(), error) {
 	mongoCtx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
 
-	if uri == "" {
-		return nil, fmt.Errorf("mongo uri is empty")
+	if *mongoURI == "" {
+		return nil, nil, fmt.Errorf("mongo uri is empty")
 	}
-	if dbName == "" {
-		return nil, fmt.Errorf("mongo database name is empty")
-	}
-	ds, err := mongods.New(mongoCtx, uri, dbName)
+	ds, err := mongods.New(mongoCtx, *mongoURI, "ds-bench")
 	if err != nil {
-		return nil, fmt.Errorf("opening mongo datastore: %s", err)
+		return nil, nil, fmt.Errorf("opening mongo datastore: %s", err)
 	}
 
-	return ds, nil
+	return ds, func() {}, nil
 }
 
 func checkErr(err error) {
