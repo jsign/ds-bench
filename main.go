@@ -18,7 +18,7 @@ import (
 	mongods "github.com/textileio/go-ds-mongo"
 )
 
-var mongoURI = flag.String("mongo-uri", "mongodb://127.0.0.1:27017", "Mongo URI")
+var mongoURI = flag.String("mongo-uri", "mongodb://mongo:27017", "Mongo URI")
 
 func main() {
 	flag.Parse()
