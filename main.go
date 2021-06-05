@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/ipfs/go-datastore"
 	"github.com/kataras/tablewriter"
 	badger "github.com/textileio/go-ds-badger3"
@@ -21,26 +22,21 @@ func main() {
 }
 
 func bench() {
-	table := tablewriter.NewWriter(os.Stdout)
-	table.SetHeader([]string{"size", "count", "parallel", "txn"})
-
-	sizesExp := []int{1, 10, 20}
-	counts := []int{1, 2, 4, 10}
+	sizes := []int{500, 1 << 10, 5 << 10, 100 << 10, 1 << 20}
+	counts := []int{1, 5, 10, 50, 100, 1000}
 	withTxns := []bool{false, true}
-	parallels := []int{1}
-	//sizesExp := []int{1, 10, 20}
-	//	counts := []int{1, 2, 4, 10, 50, 100}
-	//	withTxns := []bool{false, true}
-	//	parallels := []int{1, 2, 5, 10, 50, 100}
+	parallels := []int{1, 3, 10}
 
-	for _, sizeExp := range sizesExp {
+	for _, size := range sizes {
 		for _, count := range counts {
-			for _, parallel := range parallels {
-				for _, withTxn := range withTxns {
-					durationMs, numErrors := benchCase(sizeExp, count, parallel, withTxn)
+			fmt.Printf("With item size %s with %d items\n", humanize.IBytes(uint64(size)), count)
+			table := tablewriter.NewWriter(os.Stdout)
+			table.SetHeader([]string{"parallel", "txn", "duration_ms", "errors"})
+
+			for _, withTxn := range withTxns {
+				for _, parallel := range parallels {
+					durationMs, numErrors := benchCase(size, count, parallel, withTxn)
 					r := []string{
-						strconv.Itoa(1 << sizeExp),
-						strconv.Itoa(count),
 						strconv.Itoa(parallel),
 						strconv.FormatBool(withTxn),
 						strconv.FormatInt(durationMs, 10),
@@ -49,20 +45,21 @@ func bench() {
 					table.Append(r)
 				}
 			}
+			table.Render()
 		}
 	}
 
-	table.Render()
 }
 
-func benchCase(sizeExp, count, parallel int, withTxn bool) (int64, int64) {
+func benchCase(size, count, parallel int, withTxn bool) (int64, int64) {
 	tmpDir, err := ioutil.TempDir("", "")
 	checkErr(err)
 	defer os.RemoveAll(tmpDir)
 	ds, err := NewBadgerTxnDatastore(tmpDir)
 	checkErr(err)
+	defer ds.Close()
 
-	data := make([]byte, 1<<sizeExp)
+	data := make([]byte, size)
 
 	var wg sync.WaitGroup
 	wg.Add(parallel)
@@ -70,21 +67,27 @@ func benchCase(sizeExp, count, parallel int, withTxn bool) (int64, int64) {
 	var totalDuration int64
 	var numErrors int64
 	for k := 0; k < parallel; k++ {
-		k := k
 		go func() {
 			defer wg.Done()
 			w := ds.(datastore.Write)
+			var txn datastore.Txn
 			if withTxn {
-				txn, err := ds.NewTransaction(false)
+				txn, err = ds.NewTransaction(false)
 				if err != nil {
 					panic(err)
 				}
+				defer txn.Discard()
 				w = txn
 			}
 			start := time.Now()
 			for i := 0; i < count; i++ {
-				key := datastore.NewKey(fmt.Sprintf("%d_%d", k, i))
+				key := datastore.NewKey(fmt.Sprintf("%d", i))
 				if err := w.Put(key, data); err != nil {
+					atomic.AddInt64(&numErrors, 1)
+				}
+			}
+			if withTxn {
+				if err := txn.Commit(); err != nil {
 					atomic.AddInt64(&numErrors, 1)
 				}
 			}
